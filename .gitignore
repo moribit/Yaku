@@ -1,0 +1,14 @@
+zig-cache/
+zig-out/
+.zig-cache/
+zig-pkg/
+.DS_Store
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+.wrangler/
+node_modules/
+
+.env
+.dev.vars

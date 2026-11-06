@@ -1,0 +1,7 @@
+name = "yaku-mvp"
+main = "worker/entry.mjs"
+compatibility_date = "2026-10-14"
+compatibility_flags = ["nodejs_compat"]
+workers_dev = true
+[observability]
+enabled = true

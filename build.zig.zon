@@ -1,0 +1,25 @@
+.{
+    .name = .yaku_mvp,
+    .version = "0.0.1",
+    .fingerprint = 0x52fc6a6eb08a7a1d,
+    .minimum_zig_version = "0.17.0",
+    .dependencies = .{
+        // Pinned to a release-compatible Akamata revision. During Akamata
+        // development, override it with: zig build --fork=/path/to/Akamata
+        .akamata = .{
+            .url = "git+https://github.com/appleuser634/Akamata.git#c332887a56065b70d4db6edb19b603715ccd7fa7",
+            .hash = "akamata-0.2.1-uJIoI-ZKPAHSiRv4eniA4zlZmgT9jUXz7vexaOWnqPdP",
+        },
+    },
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "src",
+        "web",
+        "tests",
+        "deploy",
+        "README.md",
+        "docs",
+        "package.json",
+    },
+}

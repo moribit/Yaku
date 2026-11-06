@@ -1,0 +1,8 @@
+{
+  "schema": 1,
+  "framework_version": "0.2.0",
+  "files": {
+    "deploy/worker/index.mjs": "8726e3a8984b9ce8522d30150fdd788c8f3aaa5c6dbe42d6de3c13bd0833b24d",
+    "deploy/worker/wasm_dispatch.mjs": "fc32cce27320b3bfa97032df1998f84e20d3d1b32fa91b04745484c1d1533a6c"
+  }
+}
