@@ -160,3 +160,7 @@ npm run test:e2e:firefox
 ```
 
 E2EはNativeサーバーを自動起動します。8080番ポートを空けて実行してください。本番デプロイは行いません。
+
+## Akamata v0.2.1 dependency update
+
+The framework is pinned to the immutable v0.2.1 archive and its verified Zig package hash. This dependency update requires no database schema change; do not run migrations merely to update the Worker. Existing provider bindings and secrets are retained.
