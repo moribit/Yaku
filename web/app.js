@@ -2,6 +2,11 @@ import { renderAnalyzer } from "./analyzer.js";
 import { renderHand, renderTile, tileLabel } from "./tiles.js";
 import { loadStats, recordAnswer, weakYaku } from "./stats.js";
 const main = document.querySelector("main");
+document.querySelector(".skip").addEventListener("click", (event) => {
+  event.preventDefault();
+  main.focus({ preventScroll: true });
+  main.scrollIntoView({ block: "start" });
+});
 let glossaryTerms = null;
 let glossaryRenderId = 0;
 let glossaryQuery = "";
@@ -176,6 +181,73 @@ function home() {
     );
   main.append(learning);
 }
+// Authored diagrams of the catalog examples, never decompositions of user input.
+const visualLessons = {
+  tanyao: {
+    sizes: [3, 3, 3, 3, 2],
+    marks: [0, 1, 2, 3, 4],
+    labels: ["2〜8", "2〜8", "2〜8", "2〜8", "2〜8の対子"],
+    text: "1・9・字牌は使いません。14枚すべてが2〜8です。",
+  },
+  pinfu: {
+    sizes: [3, 3, 3, 3, 2],
+    marks: [0, 1, 2, 3],
+    labels: ["順子", "順子", "順子", "23索に4索", "役牌でない雀頭"],
+    text: "門前が必要です。この例は23索に4索で完成。1索でも4索でも完成する両面待ちです。5筒の雀頭は役牌ではありません。",
+    winning: { suit: "sou", value: 4 },
+  },
+  iipeikou: {
+    sizes: [3, 3, 3, 3, 2],
+    marks: [0, 1],
+    labels: ["同じ123萬", "同じ123萬", "別の面子", "別の面子", "雀頭"],
+    text: "枠で囲んだ2組が同じ種類・数字の順子です。門前のときだけ成立します。",
+  },
+  sanshoku_doujun: {
+    sizes: [3, 3, 3, 3, 2],
+    marks: [0, 1, 2],
+    labels: ["234萬", "234筒", "234索", "別の面子", "雀頭"],
+    text: "萬・筒・索の3種類で同じ234の並びを作っています。副露すると2翻から1翻になります。",
+  },
+  ittsuu: {
+    sizes: [3, 3, 3, 3, 2],
+    marks: [0, 1, 2],
+    labels: ["123萬", "456萬", "789萬", "別の面子", "雀頭"],
+    text: "同じ萬子で123・456・789をそれぞれ順子として使います。副露すると2翻から1翻になります。",
+  },
+  toitoi: {
+    sizes: [3, 3, 3, 3, 2],
+    marks: [0, 1, 2, 3],
+    labels: ["刻子（ポン）", "刻子", "刻子", "刻子", "雀頭"],
+    text: "第1組の2萬をポンした例です。同じ牌3枚の刻子が4組と、2枚の雀頭です。刻子の代わりにカンの組も使えます。",
+  },
+  chiitoitsu: {
+    sizes: [2, 2, 2, 2, 2, 2, 2],
+    marks: [0, 1, 2, 3, 4, 5, 6],
+    labels: ["対子1", "対子2", "対子3", "対子4", "対子5", "対子6", "対子7"],
+    text: "異なる7種類のペアです。門前が必要で、同じ牌4枚を2ペアとは数えません。",
+  },
+};
+function visualLesson(y) {
+  const lesson = visualLessons[y.id];
+  if (!lesson) return null;
+  const figure = el("figure", "visual-lesson");
+  figure.append(el("figcaption", "", "代表例を組ごとに見る（固定の教材例）"));
+  const groups = el("div", "lesson-groups");
+  let offset = 0;
+  lesson.sizes.forEach((size, i) => {
+    const group = el(
+      "div",
+      `lesson-group${lesson.marks.includes(i) ? " emphasized" : ""}`,
+    );
+    const tiles = el("div", "hand compact");
+    renderHand(y.example.slice(offset, offset + size), tiles, lesson.winning);
+    offset += size;
+    group.append(tiles, el("span", "", lesson.labels[i]));
+    groups.append(group);
+  });
+  figure.append(groups, el("p", "", lesson.text));
+  return figure;
+}
 function yakuCard(y, expanded = false) {
   const details = el("details", "yaku-card");
   details.open = expanded;
@@ -213,6 +285,8 @@ function yakuCard(y, expanded = false) {
       "形の例です。実際の成立には門前・和了方法・場風・自風・待ちなどの条件も必要です。",
     ),
   );
+  const lesson = visualLesson(y);
+  if (lesson) body.append(lesson);
   body.append(glossaryLinks(`${y.condition} ${y.description}`));
   details.append(body);
   return details;
@@ -374,7 +448,11 @@ function handPanel(q) {
       `和了牌：${tileLabel(q.context.winning_tile)} / ${waitNames[q.context.wait]}待ち`,
     ),
   );
-  panel.append(win, el("p", "circumstances", q.context.circumstances));
+  panel.append(
+    win,
+    el("p", "circumstances", q.context.circumstances),
+    glossaryLinks("門前 副露 和了牌 順子 刻子 雀頭 両面"),
+  );
   return panel;
 }
 function names(ids) {
@@ -422,12 +500,52 @@ function feedbackPanel(result) {
     el("p", "", result.decomposition),
   );
   panel.append(audit, glossaryLinks(result.explanation));
-  for (const y of result.yaku) panel.append(yakuCard(y));
+  for (const y of result.yaku) {
+    const role = el("section", "feedback-role");
+    const extra = result.extra_yaku.includes(y.id);
+    role.append(
+      el(
+        "h3",
+        "",
+        `${extra ? "× 今回は不成立" : result.missed_yaku.includes(y.id) ? "△ 選び忘れ・成立" : "✓ 成立"}：${y.name_ja}`,
+      ),
+      el(
+        "p",
+        "",
+        `${extra ? "この問題では条件を満たしていません。" : "この問題では条件を満たしています。"}成立条件：${y.condition}`,
+      ),
+    );
+    if (extra)
+      role.append(
+        el(
+          "p",
+          "muted",
+          "この牌姿での理由は上の「この牌姿のポイント」と条件を照らし合わせて確認してください。",
+        ),
+      );
+    role.append(yakuCard(y));
+    panel.append(role);
+  }
   return panel;
 }
 function quizPage() {
   if (!session) {
-    home();
+    main.replaceChildren(
+      heading(
+        "PRACTICE",
+        "10問の練習",
+        "成立する役をすべて選び、解説で覚えましょう。",
+      ),
+    );
+    for (const [difficulty, label] of Object.entries(difficultyNames))
+      main.append(
+        button(`${label}で練習する`, "primary full", () =>
+          startQuiz(difficulty),
+        ),
+      );
+    const weak = el("a", "glossary-back", "苦手な役を復習する →");
+    weak.href = "#weak";
+    main.append(weak);
     return;
   }
   if (session.done) {
@@ -474,6 +592,7 @@ function quizPage() {
     const submit = button("答え合わせ", "primary full", async () => {
       if (busy) return;
       busy = true;
+      fieldset.disabled = true;
       submit.disabled = true;
       submit.textContent = "確認しています…";
       main.querySelector(".notice")?.remove();
@@ -487,12 +606,21 @@ function quizPage() {
         const recorded = recordAnswer(stats, q, result);
         stats = recorded.stats;
         if (!recorded.saved) storageWarning = true;
-        quizPage();
-        main
-          .querySelector(".feedback")
-          .scrollIntoView({ behavior: "smooth", block: "start" });
+        if (location.hash === "#quiz") {
+          quizPage();
+          const feedback = main.querySelector(".feedback");
+          feedback.tabIndex = -1;
+          feedback.focus({ preventScroll: true });
+          feedback.scrollIntoView({
+            behavior: matchMedia("(prefers-reduced-motion: reduce)").matches
+              ? "auto"
+              : "smooth",
+            block: "start",
+          });
+        }
       } catch (error) {
         submit.before(notice(error.message));
+        fieldset.disabled = false;
         submit.disabled = false;
         submit.textContent = "答え合わせ";
       } finally {
@@ -630,6 +758,46 @@ function glossaryLinks(text) {
   for (const [id, word] of matches) {
     const a = el("a", "", word);
     a.href = `#glossary/${id}`;
+    a.addEventListener("click", async (event) => {
+      if (
+        !session ||
+        session.done ||
+        location.hash !== "#quiz" ||
+        event.metaKey ||
+        event.ctrlKey ||
+        event.shiftKey ||
+        event.altKey
+      )
+        return;
+      event.preventDefault();
+      const dialog = el("dialog", "term-dialog");
+      const title = el("h2", "", word);
+      title.id = "term-dialog-title";
+      dialog.setAttribute("aria-labelledby", title.id);
+      const copy = el("div", "", "読み込んでいます…");
+      const close = button("問題に戻る", "primary", () => dialog.close());
+      dialog.append(title, copy, close);
+      document.body.append(dialog);
+      dialog.addEventListener(
+        "close",
+        () => {
+          dialog.remove();
+          if (a.isConnected) a.focus({ preventScroll: true });
+        },
+        { once: true },
+      );
+      dialog.showModal();
+      close.focus();
+      try {
+        const term = await api(`/api/glossary/${id}`);
+        copy.replaceChildren(
+          el("p", "", term.definition),
+          el("p", "mnemonic", `例：${term.example}`),
+        );
+      } catch (error) {
+        copy.textContent = error.message;
+      }
+    });
     links.append(a);
   }
   if (!matches.length) {
@@ -797,6 +965,7 @@ async function glossaryPage() {
 }
 function route() {
   if (!catalog.length) return;
+  main.classList.remove("analyzer-page");
   const pageHash = location.hash.startsWith("#glossary")
     ? "#glossary"
     : location.hash || "#home";

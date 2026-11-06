@@ -10,6 +10,12 @@ import {
   commitMeld,
   isClosed,
   makeRequest,
+  editInput,
+  undoInput,
+  setWinningTile,
+  removeMeld,
+  sortedHand,
+  canAddTile,
 } from "./hand-input.js";
 const fresh = () => ({
   hand: [],
@@ -31,6 +37,10 @@ const fresh = () => ({
 });
 let state = fresh();
 let pending = false;
+const history = [];
+let chooseWinning = false;
+let pinned = true;
+let activeUpdate = null;
 const suitNames = { man: "萬子", pin: "筒子", sou: "索子", honor: "字牌" };
 const meldNames = { chi: "チー", pon: "ポン", kan: "明槓", ankan: "暗槓" };
 const groupNames = {
@@ -56,461 +66,520 @@ export function renderAnalyzer({
   glossaryLinks,
   catalog,
 }) {
+  const documentCatalog = catalog;
+  activeUpdate = update;
+  main.replaceChildren(
+    heading(
+      "HAND EXPLORER",
+      "手牌を調べる",
+      "① 牌を選ぶ → ② 最後の1枚と条件を指定 → ③ 役を調べる",
+    ),
+  );
+  main.classList.add("analyzer-page");
+  const selected = el("section", "builder-card input-summary");
+  selected.setAttribute("aria-label", "選択済み手牌");
+  const header = el("div", "builder-heading");
+  const counter = el("strong", "tile-counter");
+  header.append(el("h2", "", "選んだ手牌"), counter);
+  const hand = el("div", "hand selected-hand");
+  const modeHint = el("p", "input-mode");
+  modeHint.setAttribute("role", "status");
+  const actions = el("div", "builder-actions");
+  const choose = button("和了牌を選択", "secondary", () => {
+    chooseWinning = !chooseWinning;
+    update();
+  });
+  const undo = button("元に戻す", "secondary", () => {
+    if (undoInput(state, history)) {
+      chooseWinning = false;
+      changed();
+      update();
+    }
+  });
+  const clear = button("全クリア", "text-button", () =>
+    edit((s) => Object.assign(s, fresh())),
+  );
+  const pin = button("固定を解除", "text-button", () => {
+    pinned = !pinned;
+    update();
+  });
+  const summaryTools = el("div", "summary-tools");
+  summaryTools.append(choose, undo);
+  actions.append(clear, pin);
+  selected.append(header, hand, modeHint, summaryTools);
+  main.append(selected, actions);
+
+  const palette = el("section", "builder-card tile-palette");
+  const paletteTitle = el("h2", "", "手牌に追加");
+  const paletteHint = el(
+    "p",
+    "muted",
+    "同じ牌は4枚まで。タップするたびに1枚追加します。",
+  );
+  palette.append(paletteTitle, paletteHint);
+  const paletteButtons = [];
+  for (const [suit, name] of Object.entries(suitNames)) {
+    const group = el("div", "palette-group");
+    group.append(el("h3", "", name));
+    const row = el("div", "palette-row");
+    for (const tile of allTiles.filter((t) => t.suit === suit)) {
+      const b = button("", "palette-tile", () => edit((s) => addTile(s, tile)));
+      b.dataset.tile = tileKey(tile);
+      const count = el("span", "copy-count");
+      b.append(renderTile(tile), count);
+      paletteButtons.push({ b, count, tile });
+      row.append(b);
+    }
+    group.append(row);
+    palette.append(group);
+  }
+  main.append(palette);
+
+  const meldSection = el("details", "builder-card meld-editor");
+  meldSection.append(
+    el("summary", "", "副露・暗カンを追加する（必要なときだけ）"),
+  );
+  meldSection.append(
+    el(
+      "p",
+      "muted",
+      "チー：同じ種類の数字3つが連続。ポン：同じ牌3枚。明カン：鳴いて同じ牌4枚。暗カン：鳴かずに作った同じ牌4枚。",
+    ),
+  );
+  const melds = el("div", "builder-melds");
+  const modes = el("div", "mode-tabs");
+  const handMode = button("手牌に追加", "secondary", () =>
+    edit((s) => {
+      s.mode = "hand";
+    }),
+  );
+  const meldMode = button("副露の牌を選ぶ", "secondary", () => {
+    edit((s) => {
+      s.mode = "meld";
+    });
+    palette.scrollIntoView({ block: "start", behavior: motion() });
+  });
+  modes.append(handMode, meldMode);
+  const kind = selectControl(
+    "組の種類",
+    "meld-kind",
+    Object.entries(meldNames),
+    (value) => {
+      state.kind = value;
+      state.draft = [];
+    },
+  );
+  const draft = el("div", "hand");
+  const commit = button("この組を追加", "primary", () =>
+    edit((s) => {
+      if (commitMeld(s)) {
+        if (!isClosed(s)) {
+          s.options.riichi = "none";
+          s.options.ippatsu = false;
+        }
+        s.mode = "hand";
+      }
+    }),
+  );
+  const cancelDraft = button("候補をクリア", "text-button", () =>
+    edit((s) => {
+      s.draft = [];
+      s.mode = "hand";
+    }),
+  );
+  const draftActions = el("div", "builder-actions");
+  draftActions.append(commit, cancelDraft);
+  const meldStatus = el("p", "muted");
+  meldSection.append(melds, modes, kind, meldStatus);
+  const draftPanel = el("div", "palette-draft");
+  draftPanel.append(
+    el("p", "muted", "選んだ組の候補（押すと削除）"),
+    draft,
+    draftActions,
+  );
+  palette.insertBefore(draftPanel, paletteHint.nextSibling);
+  main.append(meldSection);
+
+  const context = el("section", "builder-card");
+  context.append(
+    el("h2", "", "和了の条件"),
+    el(
+      "p",
+      "muted",
+      "和了牌は、手を完成させた最後の1枚です。手牌から直接選ぶか、下の一覧で指定してください。",
+    ),
+  );
+  const form = el("fieldset", "analysis-form");
+  form.setAttribute("aria-label", "和了の条件");
+  const winning = selectControl(
+    "和了牌（最後の1枚）",
+    "winning-tile",
+    [],
+    (value) => setWinningTile(state, value || null),
+  );
+  const method = selectControl(
+    "和了方法",
+    "win-method",
+    [
+      ["ron", "ロン（他の人の捨て牌）"],
+      ["tsumo", "ツモ（自分で引いた牌）"],
+    ],
+    (value) => {
+      state.options.win_method = value;
+      state.options.special = "none";
+    },
+  );
+  const round = selectControl("場風", "round-wind", winds, (value) => {
+    state.options.round_wind = value;
+  });
+  const seat = selectControl("自風", "seat-wind", winds, (value) => {
+    state.options.seat_wind = value;
+    if (["tenhou", "chiihou"].includes(state.options.special))
+      state.options.special = "none";
+  });
+  const riichi = selectControl(
+    "立直",
+    "riichi",
+    [
+      ["none", "立直なし"],
+      ["riichi", "立直"],
+      ["double_riichi", "ダブル立直"],
+    ],
+    (value) => {
+      state.options.riichi = value;
+      if (value === "none") state.options.ippatsu = false;
+    },
+  );
+  const checkbox = el("label", "analysis-checkbox");
+  const ippatsu = el("input");
+  ippatsu.type = "checkbox";
+  ippatsu.addEventListener("change", () =>
+    edit((s) => {
+      s.options.ippatsu = ippatsu.checked;
+    }),
+  );
+  checkbox.append(ippatsu, el("span", "", "一発（立直後一巡以内・鳴きなし）"));
+  const special = selectControl("特別な和了状況", "special", [], (value) => {
+    state.options.special = value;
+    if (value === "rinshan") state.options.ippatsu = false;
+  });
+  form.append(winning, method, round, seat, riichi, checkbox, special);
+  const contextStatus = el("p", "context-status");
+  context.append(form, contextStatus);
+  main.append(context);
+  const examples = el("details", "analysis-examples");
+  examples.append(el("summary", "", "入力例を使う（元に戻せます）"));
+  const exampleButtons = el("div", "builder-actions");
+  for (const [id, label, key] of [
+    ["tanyao", "断么九＋平和", "sou-8"],
+    ["chiitoitsu", "七対子", "honor-1"],
+    ["kokushi_musou", "国士無双", "honor-1"],
+  ]) {
+    exampleButtons.append(
+      button(label, "secondary", () =>
+        edit((s) => {
+          Object.assign(s, fresh());
+          s.hand = structuredClone(catalog.find((y) => y.id === id).example);
+          s.winningKey = key;
+        }),
+      ),
+    );
+  }
+  examples.append(exampleButtons);
+  main.append(examples);
+  const submit = button("成立する役を調べる", "primary full", async () => {
+    const payload = makeRequest(state);
+    if (!payload || pending) return;
+    pending = true;
+    state.error = null;
+    update();
+    try {
+      state.result = await api("/api/hand/analyze", payload);
+    } catch (error) {
+      state.error = error.message;
+    } finally {
+      pending = false;
+      if (location.hash === "#analyze" && !main.contains(selected))
+        activeUpdate?.();
+      if (location.hash === "#analyze" && main.contains(selected)) {
+        update();
+        const target = results.querySelector(".analysis-result,.notice");
+        if (target) {
+          target.tabIndex = -1;
+          target.focus({ preventScroll: true });
+          target.scrollIntoView({ behavior: motion(), block: "start" });
+        }
+      }
+    }
+  });
+  const validation = el("p", "muted centered");
+  validation.setAttribute("role", "status");
+  const results = el("div", "analysis-results");
+  main.append(
+    submit,
+    validation,
+    results,
+    el(
+      "p",
+      "muted analysis-scope",
+      "入力した和了条件に基づく学習用の判定です。点数・フリテン・立直可否・対局履歴は確認しません。ドラ・ローカル役は対象外です。",
+    ),
+    glossaryLinks("門前 副露 和了牌 順子 刻子 槓子 雀頭 翻"),
+  );
+
+  function motion() {
+    return matchMedia("(prefers-reduced-motion: reduce)").matches
+      ? "auto"
+      : "smooth";
+  }
   function changed() {
     state.result = null;
     state.error = null;
   }
-  function refresh() {
-    if (location.hash !== "#analyze") return;
-    const focus = document.activeElement?.dataset.focus;
-    draw();
-    if (focus)
-      main
-        .querySelector(`[data-focus="${focus}"]`)
-        ?.focus({ preventScroll: true });
+  function edit(operation) {
+    if (pending) return;
+    if (editInput(state, history, operation)) changed();
+    chooseWinning = false;
+    update();
   }
-  function selectControl(label, key, choices, value, onChange) {
+  function selectControl(label, key, choices, change) {
     const wrapper = el("label", "form-control");
     wrapper.append(el("span", "", label));
     const select = el("select");
     select.dataset.focus = key;
     select.setAttribute("aria-label", label);
-    for (const [id, name] of choices) {
-      const option = el("option", "", name);
-      option.value = id;
-      select.append(option);
-    }
-    select.value = value;
-    select.addEventListener("change", () => {
-      onChange(select.value);
-      changed();
-      refresh();
-    });
+    options(select, choices);
+    select.addEventListener("change", () => edit(() => change(select.value)));
     wrapper.append(select);
     return wrapper;
   }
-  function draw() {
-    main.replaceChildren(
-      heading(
-        "HAND EXPLORER",
-        "手牌を調べる",
-        "牌を自由に選んで、成立する役とその理由を確かめましょう。",
-      ),
-    );
-    const steps = el(
-      "p",
-      "analyzer-guide",
-      "① 牌を14枚相当選ぶ　② 和了牌と条件を指定　③ 役を調べる",
-    );
-    main.append(steps);
-    const selected = el("section", "builder-card");
-    const header = el("div", "builder-heading");
-    header.append(
-      el("h2", "", "選んだ牌"),
-      el("strong", "tile-counter", `${equivalentCount(state)} / 14枚相当`),
-    );
-    selected.append(header);
-    selected.append(
-      el(
-        "p",
-        "muted",
-        "和了牌を含めて選んでください。選択済みの牌を押すと1枚取り消せます。",
-      ),
-    );
-    const hand = el("div", "hand selected-hand");
-    state.hand.forEach((tile, i) => {
-      const b = button("", "selected-tile", () => {
-        removeTile(state, i);
-        changed();
-        refresh();
-      });
-      b.append(
-        renderTile(tile, { winning: tileKey(tile) === state.winningKey }),
-      );
-      b.setAttribute("aria-label", `${tileLabel(tile)}を取り消す`);
-      b.dataset.focus = `selected-${i}`;
-      b.disabled = pending;
-      hand.append(b);
-    });
-    if (!state.hand.length)
-      hand.append(el("span", "empty-hand", "下の牌一覧から選択してください。"));
-    selected.append(hand);
-    if (state.melds.length) {
-      const melds = el("div", "builder-melds");
-      state.melds.forEach((meld, i) => {
-        const row = el("div", "declared-meld");
-        const tiles = el("div", "hand");
-        renderHand(meld.tiles, tiles);
-        row.append(
-          el("span", "muted", meldNames[meld.kind]),
-          tiles,
-          button("取り消す", "text-button", () => {
-            state.melds.splice(i, 1);
-            changed();
-            refresh();
-          }),
-        );
-        melds.append(row);
-      });
-      selected.append(melds);
-    }
-    const controls = el("div", "builder-actions");
-    controls.append(
-      button("一枚戻す", "secondary", () => {
-        removeTile(state, state.hand.length - 1);
-        changed();
-        refresh();
-      }),
-      button("すべてクリア", "text-button", () => {
-        state = fresh();
-        refresh();
+  function options(select, choices) {
+    const signature = JSON.stringify(choices);
+    if (select.dataset.choices === signature) return;
+    select.replaceChildren(
+      ...choices.map(([id, name]) => {
+        const o = el("option", "", name);
+        o.value = id;
+        return o;
       }),
     );
-    for (const b of controls.querySelectorAll("button")) b.disabled = pending;
-    selected.append(controls);
-    main.append(selected);
-    const palette = el("section", "builder-card tile-palette");
-    palette.append(el("h2", "", "牌を選ぶ"));
-    const modes = el("div", "mode-tabs");
-    for (const [mode, label] of [
-      ["hand", "手牌に追加"],
-      ["meld", "面子を追加"],
-    ]) {
-      const b = button(
-        label,
-        `secondary${state.mode === mode ? " active" : ""}`,
-        () => {
-          state.mode = mode;
-          refresh();
-        },
+    select.dataset.choices = signature;
+  }
+  let handSignature, meldSignature, draftSignature, resultSignature;
+  function update() {
+    const active = document.activeElement;
+    const focusKey = active?.dataset.focus;
+    selected.classList.toggle("pinned", pinned);
+    pin.textContent = pinned ? "固定を解除" : "手牌を固定";
+    choose.textContent = chooseWinning
+      ? "和了牌の選択をやめる"
+      : "和了牌を選択";
+    choose.setAttribute("aria-pressed", String(chooseWinning));
+    choose.disabled = pending || !state.hand.length;
+    undo.disabled = pending || !history.length;
+    clear.disabled =
+      pending ||
+      !(
+        state.hand.length ||
+        state.melds.length ||
+        state.draft.length ||
+        state.winningKey
       );
-      b.setAttribute("aria-pressed", String(state.mode === mode));
-      b.disabled = pending;
-      modes.append(b);
-    }
-    palette.append(modes);
-    if (state.mode === "meld") {
-      palette.append(
-        selectControl(
-          "面子の種類",
-          "meld-kind",
-          Object.entries(meldNames),
-          state.kind,
-          (value) => {
-            state.kind = value;
-            state.draft = [];
-          },
-        ),
-      );
-      palette.append(
-        el(
-          "p",
-          "muted",
-          "チー・ポンは3枚、明槓・暗槓は4枚を選び「面子を追加」を押してください。暗槓は門前を保ちます。",
-        ),
-      );
-      if (equivalentCount(state) > 11)
-        palette.append(
-          el(
-            "p",
-            "notice",
-            "面子を追加するには、先に手牌から3枚分を取り消してください。",
-          ),
-        );
-      const draft = el("div", "meld-draft");
-      const chosen = el("div", "hand");
-      state.draft.forEach((tile, i) => {
+    pin.disabled = pending;
+    counter.textContent = `${equivalentCount(state)} / 14枚相当`;
+    modeHint.textContent = chooseWinning
+      ? "和了牌の選択中：手牌を押して指定（削除なし）"
+      : `手牌を押すと1枚削除。${state.winningKey ? ` 和了牌：${tileLabel(state.hand.find((t) => tileKey(t) === state.winningKey))}` : " 最後の1枚も指定してください。"}`;
+    selected.classList.toggle("choosing-winning", chooseWinning);
+    const handKey = JSON.stringify([
+      state.hand,
+      state.winningKey,
+      chooseWinning,
+      pending,
+    ]);
+    if (handKey !== handSignature) {
+      handSignature = handKey;
+      hand.replaceChildren();
+      let highlighted = false;
+      for (const { tile, index } of sortedHand(state)) {
+        const winningTile = !highlighted && tileKey(tile) === state.winningKey;
+        if (winningTile) highlighted = true;
         const b = button("", "selected-tile", () => {
-          state.draft.splice(i, 1);
-          changed();
-          refresh();
+          if (chooseWinning) {
+            edit((s) => setWinningTile(s, tileKey(tile)));
+            chooseWinning = false;
+            update();
+          } else edit((s) => removeTile(s, index));
         });
-        b.append(renderTile(tile));
+        b.dataset.focus = `selected-${index}`;
         b.setAttribute(
           "aria-label",
-          `${tileLabel(tile)}を面子候補から取り消す`,
+          `${tileLabel(tile)}${winningTile ? "（和了牌）" : ""}を${chooseWinning ? "和了牌に指定" : "削除"}`,
         );
         b.disabled = pending;
-        chosen.append(b);
-      });
-      draft.append(chosen);
-      const add = button("面子を追加", "primary", () => {
-        if (commitMeld(state)) {
-          if (!isClosed(state)) {
-            state.options.riichi = "none";
-            state.options.ippatsu = false;
-          }
-          changed();
-          refresh();
-        }
-      });
-      add.disabled =
-        pending || !validDraft(state) || equivalentCount(state) > 11;
-      draft.append(
-        add,
-        button("候補をクリア", "text-button", () => {
-          state.draft = [];
-          refresh();
-        }),
-      );
-      palette.append(draft);
-    } else if (state.draft.length) {
-      palette.append(
-        el(
-          "p",
-          "notice",
-          "入力中の面子があります。「面子を追加」に戻って確定するか、候補をクリアしてください。",
-        ),
-      );
+        b.append(renderTile(tile, { winning: winningTile }));
+        hand.append(b);
+      }
+      if (!state.hand.length)
+        hand.append(el("span", "empty-hand", "下の牌をタップして追加"));
     }
     const counts = countTiles(state);
-    for (const [suit, label] of Object.entries(suitNames)) {
-      const group = el("div", "palette-group");
-      group.append(el("h3", "", label));
-      const row = el("div", `palette-row ${suit === "honor" ? "honors" : ""}`);
-      for (const tile of allTiles.filter((t) => t.suit === suit)) {
-        const key = tileKey(tile),
-          count = counts.get(key) || 0;
-        const b = button("", "palette-tile", () => {
-          if (addTile(state, tile)) {
-            changed();
-            refresh();
-          }
-        });
-        b.dataset.focus = key;
-        b.append(renderTile(tile), el("span", "copy-count", `${count} / 4`));
-        b.setAttribute(
-          "aria-label",
-          `${tileLabel(tile)}を追加（${count}枚選択済み）`,
-        );
-        b.disabled =
-          pending ||
-          count >= 4 ||
-          (state.mode === "hand"
-            ? equivalentCount(state) >= 14
-            : state.melds.length >= 4 ||
-              equivalentCount(state) > 11 ||
-              state.draft.length >=
-                (["kan", "ankan"].includes(state.kind) ? 4 : 3));
-        row.append(b);
-      }
-      group.append(row);
-      palette.append(group);
+    paletteTitle.textContent =
+      state.mode === "hand"
+        ? "手牌に追加"
+        : `${meldNames[state.kind]}の牌を選択中`;
+    paletteHint.textContent =
+      state.mode === "hand"
+        ? "タップで1枚追加。同じ牌は副露も合わせて4枚まで。"
+        : "下の牌から組を作り、パレット上部の「この組を追加」で確定してください。";
+    for (const { b, count, tile } of paletteButtons) {
+      const n = counts.get(tileKey(tile)) || 0;
+      count.textContent = `${n} / 4`;
+      b.setAttribute(
+        "aria-label",
+        `${tileLabel(tile)}を追加（${n}枚選択済み）`,
+      );
+      b.disabled = pending || !canAddTile(state, tile);
+      b.classList.toggle("has-copies", n > 0);
     }
-    main.append(palette);
-    const context = el("section", "builder-card");
-    context.append(
-      el("h2", "", "和了の条件"),
-      el(
-        "p",
-        "muted",
-        "同じ牌姿でも、和了牌やロン／ツモによって役が変わります。",
-      ),
-    );
-    const form = el("fieldset", "analysis-form");
-    form.disabled = pending;
+    const meldKey = JSON.stringify([state.melds, pending]);
+    if (meldKey !== meldSignature) {
+      meldSignature = meldKey;
+      melds.replaceChildren();
+      state.melds.forEach((meld, index) => {
+        const row = el("div", "declared-meld");
+        const tiles = el("div", "hand compact");
+        renderHand(meld.tiles, tiles);
+        const remove = button(
+          `${meldNames[meld.kind]}を削除`,
+          "text-button",
+          () => edit((s) => removeMeld(s, index)),
+        );
+        remove.disabled = pending;
+        row.append(el("strong", "", meldNames[meld.kind]), tiles, remove);
+        melds.append(row);
+      });
+    }
+    draftPanel.hidden = state.mode !== "meld" && !state.draft.length;
+    const draftKey = JSON.stringify([state.draft, pending]);
+    if (draftKey !== draftSignature) {
+      draftSignature = draftKey;
+      draft.replaceChildren();
+      state.draft.forEach((tile, index) => {
+        const b = button("", "selected-tile", () =>
+          edit((s) => s.draft.splice(index, 1)),
+        );
+        b.append(renderTile(tile));
+        b.disabled = pending;
+        b.setAttribute("aria-label", `${tileLabel(tile)}を候補から削除`);
+        b.dataset.focus = `draft-${index}`;
+        draft.append(b);
+      });
+    }
+    for (const [b, mode] of [
+      [handMode, "hand"],
+      [meldMode, "meld"],
+    ]) {
+      b.setAttribute("aria-pressed", String(state.mode === mode));
+      b.classList.toggle("active", state.mode === mode);
+      b.disabled = pending;
+    }
+    kind.querySelector("select").value = state.kind;
+    kind.querySelector("select").disabled = pending;
+    commit.disabled =
+      pending || !validDraft(state) || equivalentCount(state) > 11;
+    cancelDraft.disabled = pending || !state.draft.length;
+    meldStatus.textContent =
+      equivalentCount(state) > 11
+        ? "組を追加するには手牌から3枚分を削除してください。"
+        : state.draft.length
+          ? "候補を確定またはクリアすると判定できます。カンも3枚相当で数えます。"
+          : "カンは実物4枚・手の構成では3枚相当。暗カンは門前を保ちます。";
     const unique = [
-      ...new Map(state.hand.map((t) => [tileKey(t), t])).values(),
+      ...new Map(
+        sortedHand(state).map(({ tile }) => [tileKey(tile), tile]),
+      ).values(),
     ];
-    form.append(
-      selectControl(
-        "和了牌",
-        "winning-tile",
-        [
-          ["", "最後の1枚を選択"],
-          ...unique.map((t) => [tileKey(t), tileLabel(t)]),
-        ],
-        state.winningKey || "",
-        (value) => {
-          state.winningKey = value || null;
-        },
-      ),
-    );
-    form.append(
-      selectControl(
-        "和了方法",
-        "win-method",
-        [
-          ["ron", "ロン"],
-          ["tsumo", "ツモ"],
-        ],
-        state.options.win_method,
-        (value) => {
-          state.options.win_method = value;
-          state.options.special = "none";
-        },
-      ),
-    );
-    form.append(
-      selectControl(
-        "場風",
-        "round-wind",
-        winds,
-        state.options.round_wind,
-        (value) => (state.options.round_wind = value),
-      ),
-      selectControl(
-        "自風",
-        "seat-wind",
-        winds,
-        state.options.seat_wind,
-        (value) => {
-          state.options.seat_wind = value;
-          if (["tenhou", "chiihou"].includes(state.options.special))
-            state.options.special = "none";
-        },
-      ),
-    );
+    const winSelect = winning.querySelector("select");
+    options(winSelect, [
+      ["", "最後の1枚を選択"],
+      ...unique.map((t) => [tileKey(t), tileLabel(t)]),
+    ]);
+    winSelect.value = state.winningKey || "";
     const closed = isClosed(state);
-    const declaration = selectControl(
-      "立直",
-      "riichi",
-      [
-        ["none", "立直なし"],
-        ["riichi", "立直"],
-        ["double_riichi", "ダブル立直"],
-      ],
-      state.options.riichi,
-      (value) => {
-        state.options.riichi = value;
-        if (value === "none") state.options.ippatsu = false;
-      },
-    );
-    declaration.querySelector("select").disabled = !closed || pending;
-    form.append(declaration);
-    const checkbox = el("label", "analysis-checkbox");
-    const input = el("input");
-    input.type = "checkbox";
-    input.checked = state.options.ippatsu;
-    input.disabled = !closed || state.options.riichi === "none" || pending;
-    input.dataset.focus = "ippatsu";
-    input.addEventListener("change", () => {
-      state.options.ippatsu = input.checked;
-      changed();
-      refresh();
-    });
-    checkbox.append(input, el("span", "", "一発（立直後一巡以内・鳴きなし）"));
-    form.append(checkbox);
-    const special = [["none", "通常の和了"]];
+    for (const [wrapper, value] of [
+      [method, state.options.win_method],
+      [round, state.options.round_wind],
+      [seat, state.options.seat_wind],
+      [riichi, state.options.riichi],
+    ])
+      wrapper.querySelector("select").value = value;
+    form.disabled = pending;
+    riichi.querySelector("select").disabled = !closed;
+    ippatsu.checked = state.options.ippatsu;
+    ippatsu.disabled = !closed || state.options.riichi === "none";
+    const choices = [["none", "通常の和了"]];
     if (state.options.win_method === "tsumo") {
-      special.push(["haitei", "海底牌でのツモ"]);
+      choices.push(["haitei", "海底牌でのツモ"]);
       if (state.melds.some((m) => ["kan", "ankan"].includes(m.kind)))
-        special.push(["rinshan", "嶺上牌でのツモ"]);
+        choices.push(["rinshan", "嶺上牌でのツモ"]);
       if (!state.melds.length && state.options.riichi === "none")
-        special.push(
+        choices.push(
           state.options.seat_wind === "east"
             ? ["tenhou", "親の最初の配牌で和了（天和）"]
             : ["chiihou", "子の鳴きなし最初のツモ（地和）"],
         );
     } else
-      special.push(
+      choices.push(
         ["houtei", "最後の打牌でのロン"],
         ["chankan", "加槓牌へのロン（槍槓）"],
       );
-    if (!special.some(([id]) => id === state.options.special))
+    if (!choices.some(([id]) => id === state.options.special))
       state.options.special = "none";
-    form.append(
-      selectControl(
-        "特別な和了状況",
-        "special",
-        special,
-        state.options.special,
-        (value) => {
-          state.options.special = value;
-          if (value === "rinshan") state.options.ippatsu = false;
-        },
-      ),
-    );
-    context.append(
-      form,
-      el(
-        "p",
-        "context-status",
-        closed
-          ? "門前の手です（暗槓を含む場合も門前）。"
-          : "副露した手です。門前限定役は成立しません。",
-      ),
-    );
-    main.append(context);
-    const examples = el("details", "analysis-examples");
-    examples.append(el("summary", "", "入力例を使う"));
-    const exampleButtons = el("div", "builder-actions");
-    for (const [id, label, winning] of [
-      ["tanyao", "断么九＋平和", "sou-8"],
-      ["chiitoitsu", "七対子", "honor-1"],
-      ["kokushi_musou", "国士無双", "honor-1"],
-    ])
-      exampleButtons.append(
-        button(label, "secondary", () => {
-          state = fresh();
-          state.hand = structuredClone(catalogExample(id));
-          state.winningKey = winning;
-          refresh();
-        }),
-      );
-    examples.append(exampleButtons);
-    main.append(examples);
-    const submit = button(
-      pending ? "判定しています…" : "成立する役を調べる",
-      "primary full",
-      async () => {
-        const payload = makeRequest(state);
-        if (!payload || pending) return;
-        pending = true;
-        state.error = null;
-        refresh();
-        try {
-          state.result = await api("/api/hand/analyze", payload);
-        } catch (error) {
-          state.error = error.message;
-        } finally {
-          pending = false;
-          refresh();
-          if (location.hash === "#analyze")
-            main
-              .querySelector(".analysis-result,.notice")
-              ?.scrollIntoView({ behavior: "smooth", block: "start" });
-        }
-      },
-    );
+    const specialSelect = special.querySelector("select");
+    options(specialSelect, choices);
+    specialSelect.value = state.options.special;
+    contextStatus.textContent = closed
+      ? "門前：他の人の牌で組を作っていない手です（暗カンも門前）。"
+      : "副露あり：門前だけの役・立直は成立しません。";
     submit.disabled = pending || !makeRequest(state);
-    main.append(submit);
-    if (!makeRequest(state))
-      main.append(
-        el(
-          "p",
-          "muted centered",
-          equivalentCount(state) !== 14
-            ? "手牌と面子を合わせて14枚相当にしてください。"
-            : state.draft.length
-              ? "入力中の面子を確定またはクリアしてください。"
-              : "和了牌を選んでください。",
-        ),
-      );
-    if (state.error) {
-      const warning = el("p", "notice", state.error);
-      warning.setAttribute("role", "alert");
-      main.append(warning);
+    submit.textContent = pending ? "判定しています…" : "成立する役を調べる";
+    validation.textContent = makeRequest(state)
+      ? "入力できました。ボタンを押すと判定します。"
+      : equivalentCount(state) !== 14
+        ? `あと${14 - equivalentCount(state)}枚相当を追加してください（和了牌を含む）。`
+        : state.draft.length
+          ? "入力中の副露候補を確定またはクリアしてください。"
+          : "和了牌を手牌か一覧から指定してください。";
+    const resultKey = JSON.stringify([state.result, state.error]);
+    if (resultKey !== resultSignature) {
+      resultSignature = resultKey;
+      results.replaceChildren();
+      if (state.error) {
+        const warning = el("div", "notice", state.error);
+        warning.setAttribute("role", "alert");
+        warning.append(
+          button("和了条件を確認する", "text-button", () => {
+            winSelect.focus();
+            context.scrollIntoView({ behavior: motion(), block: "start" });
+          }),
+        );
+        results.append(warning);
+      }
+      if (state.result) drawResult(state.result);
     }
-    if (state.result) drawResult(state.result);
-    const scope = el(
-      "p",
-      "muted analysis-scope",
-      "入力した和了条件に基づく学習用の役判定です。点数計算・フリテン・立直可否・対局履歴の確認は行いません。赤ドラ・ドラ・ローカル役は対象外です。",
-    );
-    main.append(
-      scope,
-      glossaryLinks("門前 副露 和了牌 順子 刻子 槓子 雀頭 翻"),
-    );
-    if (pending)
-      main.querySelectorAll("button,input,select").forEach((control) => {
-        control.disabled = true;
-      });
+    exampleButtons.querySelectorAll("button").forEach((b) => {
+      b.disabled = pending;
+    });
+    if (active && !active.isConnected && focusKey) {
+      const target =
+        main.querySelector(`[data-focus="${focusKey}"]`) ||
+        (focusKey.startsWith("selected-")
+          ? hand.querySelector("button") || choose
+          : cancelDraft);
+      (target.disabled ? undo : target).focus({ preventScroll: true });
+    }
   }
-  function catalogExample(id) {
-    return documentCatalog.find((y) => y.id === id).example;
-  }
-  const documentCatalog = catalog;
   function drawResult(result) {
     const section = el("section", "analysis-result feedback");
     section.setAttribute("aria-live", "polite");
@@ -576,7 +645,7 @@ export function renderAnalyzer({
       }
       section.append(card);
     });
-    main.append(section);
+    results.append(section);
   }
-  draw();
+  update();
 }

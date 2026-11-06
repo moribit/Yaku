@@ -84,3 +84,59 @@ export function makeRequest(state) {
     ...state.options,
   };
 }
+
+// Editing history contains only input, never API results or DOM/UI flags.
+export const HISTORY_LIMIT = 50;
+const inputKeys = [
+  "hand",
+  "melds",
+  "draft",
+  "mode",
+  "kind",
+  "winningKey",
+  "options",
+];
+const snapshot = (state) =>
+  Object.fromEntries(
+    inputKeys.map((key) => [key, structuredClone(state[key])]),
+  );
+export function editInput(state, history, operation) {
+  const before = snapshot(state);
+  operation(state);
+  if (JSON.stringify(before) === JSON.stringify(snapshot(state))) return false;
+  history.push(before);
+  if (history.length > HISTORY_LIMIT) history.shift();
+  return true;
+}
+export function undoInput(state, history) {
+  if (!history.length) return false;
+  Object.assign(state, history.pop());
+  return true;
+}
+export function setWinningTile(state, key) {
+  if (key !== null && !state.hand.some((tile) => tileKey(tile) === key))
+    return false;
+  state.winningKey = key;
+  return true;
+}
+export function removeMeld(state, index) {
+  if (!Number.isInteger(index) || index < 0 || index >= state.melds.length)
+    return false;
+  state.melds.splice(index, 1);
+  return true;
+}
+export function sortedHand(state) {
+  const suits = ["man", "pin", "sou", "honor"];
+  return state.hand
+    .map((tile, index) => ({ tile, index }))
+    .sort(
+      (a, b) =>
+        suits.indexOf(a.tile.suit) - suits.indexOf(b.tile.suit) ||
+        a.tile.value - b.tile.value ||
+        a.index - b.index,
+    );
+}
+export function canAddTile(state, tile) {
+  const copy = snapshot(state);
+  return addTile(copy, tile);
+}

@@ -144,3 +144,19 @@ Quizの35問を独立した期待値として一致を検査し、平和の待�
 - データ: `src/mahjong/glossary.zig`。stable ID、名前・読み・分類・定義・例・別名・関連IDを1箇所へ追加。unique IDと関連リンクをunit testで検査します。
 
 追加ファイル: `src/analysis/model.zig` / `evaluator.zig` / `evaluator_test.zig`、`web/analyzer.js` / `hand-input.js`、`tests/hand-input.test.mjs`。各APIは既存の単一contractに登録し、4 KiB body limitと標準Workers deploy pathを使用します。
+
+
+## モバイルUXとブラウザ回帰テスト
+
+手牌入力のUndo・直接和了牌指定、モバイルの練習画面・用語補助・7役の図解を改善しました。[調査・設計・検証結果と画面比較](docs/mobile-ux.md)を参照してください。
+
+```sh
+npm ci
+npx playwright install chromium webkit
+npm run test:e2e
+# Firefoxを実行できる環境での追加確認:
+npx playwright install firefox
+npm run test:e2e:firefox
+```
+
+E2EはNativeサーバーを自動起動します。8080番ポートを空けて実行してください。本番デプロイは行いません。
